@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from datetime import datetime
 from io import BytesIO
@@ -39,11 +40,15 @@ def generate_json_report(topic: str, report: str, report_id: str, created_at: da
 
 
 async def get_report_diff(config: Config, topic: str) -> str | None:
+    from app.memory import _model
+    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
     conn = await asyncpg.connect(config.database_url)
     try:
         rows = await conn.fetch(
-            "SELECT report, created_at FROM reports WHERE topic = $1 ORDER BY created_at DESC LIMIT 2",
-            topic,
+            """SELECT report, created_at FROM reports
+               WHERE 1 - (embedding <=> $1::vector) > 0.7
+               ORDER BY created_at DESC LIMIT 2""",
+            str(embedding),
         )
         if len(rows) < 2:
             return None

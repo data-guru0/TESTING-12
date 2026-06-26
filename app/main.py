@@ -51,12 +51,14 @@ async def _process_job(data: dict, msg_id: str):
         if cached:
             logger.info(f"[{job_id}] Cache hit")
             report_text = cached
+            await ltm_store(config, topic, report_text, str(uuid.uuid4()))
         else:
             logger.info(f"[{job_id}] Cache miss, checking long-term memory...")
             ltm_hit = await ltm_search(config, topic)
             if ltm_hit:
                 logger.info(f"[{job_id}] LTM hit")
                 report_text = ltm_hit["report"]
+                await ltm_store(config, topic, report_text, str(uuid.uuid4()))
             else:
                 logger.info(f"[{job_id}] Running LangGraph agent...")
                 state = ResearchState(
@@ -71,9 +73,8 @@ async def _process_job(data: dict, msg_id: str):
                     await set_result(redis_client, job_id, {"status": "blocked", "error": reason})
                     await ack_job(redis_client, msg_id)
                     return
-                report_id = str(uuid.uuid4())
                 await cache_set(redis_client, topic, report_text)
-                await ltm_store(config, topic, report_text, report_id)
+                await ltm_store(config, topic, report_text, str(uuid.uuid4()))
 
         await session_add(redis_client, session_id, "assistant", report_text[:500])
         diff = await ltm_diff(config, topic)
