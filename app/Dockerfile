@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev &
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 COPY app/ ./app/
 
-# In production: use gunicorn with multiple workers (--workers 4)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
