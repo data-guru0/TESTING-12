@@ -64,17 +64,35 @@ jobs:
           print(json.dumps(td))
           ")
           NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query taskDefinition.taskDefinitionArn --output text)
-          for i in $(seq 1 24); do
-            STATUS=$(aws ecs describe-services --cluster research-agent-cluster --services research-agent-app --query 'services[0].status' --output text 2>/dev/null || echo "MISSING")
-            echo "Service status: $STATUS"
-            if [ "$STATUS" = "ACTIVE" ]; then break; fi
-            sleep 5
-          done
-          aws ecs update-service \
-            --cluster research-agent-cluster \
-            --service research-agent-app \
-            --task-definition $NEW_ARN \
-            --region $AWS_REGION
+          PRIVATE_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=research-agent-private-0,research-agent-private-1" \
+            --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
+          ECS_SG=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=research-agent-ecs-tasks" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+          APP_TG=$(aws elbv2 describe-target-groups \
+            --names research-agent-app-tg \
+            --query 'TargetGroups[0].TargetGroupArn' --output text)
+          STATUS=$(aws ecs describe-services --cluster research-agent-cluster --services research-agent-app --query 'services[0].status' --output text 2>/dev/null || echo "MISSING")
+          echo "Service status: $STATUS"
+          if [ "$STATUS" = "ACTIVE" ]; then
+            aws ecs update-service \
+              --cluster research-agent-cluster \
+              --service research-agent-app \
+              --task-definition $NEW_ARN \
+              --region $AWS_REGION
+          else
+            echo "Service not active, creating from scratch..."
+            aws ecs create-service \
+              --cluster research-agent-cluster \
+              --service-name research-agent-app \
+              --task-definition $NEW_ARN \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$PRIVATE_SUBNETS],securityGroups=[$ECS_SG],assignPublicIp=DISABLED}" \
+              --load-balancers "targetGroupArn=$APP_TG,containerName=app,containerPort=8000" \
+              --region $AWS_REGION
+          fi
 
       - name: Deploy PyRIT to ECS
         env:
@@ -91,17 +109,35 @@ jobs:
           print(json.dumps(td))
           ")
           NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query taskDefinition.taskDefinitionArn --output text)
-          for i in $(seq 1 24); do
-            STATUS=$(aws ecs describe-services --cluster research-agent-cluster --services research-agent-pyrit --query 'services[0].status' --output text 2>/dev/null || echo "MISSING")
-            echo "Service status: $STATUS"
-            if [ "$STATUS" = "ACTIVE" ]; then break; fi
-            sleep 5
-          done
-          aws ecs update-service \
-            --cluster research-agent-cluster \
-            --service research-agent-pyrit \
-            --task-definition $NEW_ARN \
-            --region $AWS_REGION
+          PRIVATE_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=research-agent-private-0,research-agent-private-1" \
+            --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
+          ECS_SG=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=research-agent-ecs-tasks" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+          PYRIT_TG=$(aws elbv2 describe-target-groups \
+            --names research-agent-pyrit-tg \
+            --query 'TargetGroups[0].TargetGroupArn' --output text)
+          STATUS=$(aws ecs describe-services --cluster research-agent-cluster --services research-agent-pyrit --query 'services[0].status' --output text 2>/dev/null || echo "MISSING")
+          echo "Service status: $STATUS"
+          if [ "$STATUS" = "ACTIVE" ]; then
+            aws ecs update-service \
+              --cluster research-agent-cluster \
+              --service research-agent-pyrit \
+              --task-definition $NEW_ARN \
+              --region $AWS_REGION
+          else
+            echo "Service not active, creating from scratch..."
+            aws ecs create-service \
+              --cluster research-agent-cluster \
+              --service-name research-agent-pyrit \
+              --task-definition $NEW_ARN \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$PRIVATE_SUBNETS],securityGroups=[$ECS_SG],assignPublicIp=DISABLED}" \
+              --load-balancers "targetGroupArn=$PYRIT_TG,containerName=pyrit,containerPort=8001" \
+              --region $AWS_REGION
+          fi
 
       - name: Wait for app service stability
         run: |
