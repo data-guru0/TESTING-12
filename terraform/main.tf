@@ -38,6 +38,11 @@ variable "pyrit_image" {
   description = "ECR image URI for the PyRIT dashboard"
 }
 
+variable "tensorzero_image" {
+  description = "ECR image URI for TensorZero gateway sidecar"
+  default     = "placeholder"
+}
+
 data "aws_availability_zones" "available" {}
 
 locals {
@@ -167,6 +172,12 @@ resource "aws_security_group" "alb" {
   ingress {
     from_port   = 80
     to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 8001
+    to_port     = 8001
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -403,15 +414,13 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-resource "aws_lb_listener_rule" "pyrit" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 10
-  action {
+resource "aws_lb_listener" "pyrit" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 8001
+  protocol          = "HTTP"
+  default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.pyrit.arn
-  }
-  condition {
-    path_pattern { values = ["/pyrit*"] }
   }
 }
 
@@ -434,6 +443,19 @@ resource "aws_iam_role" "ecs_task_execution" {
 resource "aws_iam_role_policy_attachment" "ecs_execution_basic" {
   role       = aws_iam_role.ecs_task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name = "${var.project}-execution-secrets"
+  role = aws_iam_role.ecs_task_execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:research-agent/*"
+    }]
+  })
 }
 
 resource "aws_iam_role" "ecs_task" {
@@ -483,6 +505,11 @@ resource "aws_cloudwatch_log_group" "pyrit" {
   retention_in_days = 7
 }
 
+resource "aws_cloudwatch_log_group" "tensorzero" {
+  name              = "/ecs/${var.project}-tensorzero"
+  retention_in_days = 7
+}
+
 resource "aws_secretsmanager_secret" "config" {
   name = "research-agent/config"
 }
@@ -508,25 +535,46 @@ resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project}-app"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"
-  memory                   = "512"
+  cpu                      = "512"
+  memory                   = "1024"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
-  container_definitions = jsonencode([{
-    name      = "app"
-    image     = var.app_image
-    essential = true
-    portMappings = [{ containerPort = 8000, protocol = "tcp" }]
-    environment = [{ name = "AWS_REGION", value = var.aws_region }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.app.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "ecs"
+  container_definitions = jsonencode([
+    {
+      name      = "app"
+      image     = var.app_image
+      essential = true
+      portMappings = [{ containerPort = 8000, protocol = "tcp" }]
+      environment = [{ name = "AWS_REGION", value = var.aws_region }]
+      dependsOn = [{ containerName = "tensorzero", condition = "START" }]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.app.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    },
+    {
+      name      = "tensorzero"
+      image     = var.tensorzero_image
+      essential = false
+      portMappings = [{ containerPort = 3000, protocol = "tcp" }]
+      secrets = [
+        { name = "OPENAI_API_KEY", valueFrom = "${aws_secretsmanager_secret.config.arn}:OPENAI_API_KEY::" },
+        { name = "GROQ_API_KEY",   valueFrom = "${aws_secretsmanager_secret.config.arn}:GROQ_API_KEY::" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.tensorzero.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
       }
     }
-  }])
+  ])
 }
 
 resource "aws_ecs_task_definition" "pyrit" {
@@ -564,9 +612,9 @@ resource "aws_ecs_service" "app" {
   desired_count   = 1
   launch_type     = "FARGATE"
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
@@ -582,9 +630,9 @@ resource "aws_ecs_service" "pyrit" {
   desired_count   = 1
   launch_type     = "FARGATE"
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
   load_balancer {
     target_group_arn = aws_lb_target_group.pyrit.arn
@@ -601,6 +649,12 @@ resource "aws_ecr_repository" "app" {
 
 resource "aws_ecr_repository" "pyrit" {
   name                 = "${var.project}-pyrit"
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+}
+
+resource "aws_ecr_repository" "tensorzero" {
+  name                 = "${var.project}-tensorzero"
   image_tag_mutability = "MUTABLE"
   image_scanning_configuration { scan_on_push = true }
 }
@@ -660,6 +714,10 @@ output "app_ecr_url" {
 
 output "pyrit_ecr_url" {
   value = aws_ecr_repository.pyrit.repository_url
+}
+
+output "tensorzero_ecr_url" {
+  value = aws_ecr_repository.tensorzero.repository_url
 }
 
 output "redis_endpoint" {

@@ -49,6 +49,16 @@ jobs:
           docker tag $ECR_REGISTRY/$PYRIT_REPO:$GITHUB_SHA $ECR_REGISTRY/$PYRIT_REPO:latest
           docker push $ECR_REGISTRY/$PYRIT_REPO:latest
 
+      - name: Build and push TensorZero image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          TZ_REPO: research-agent-tensorzero
+        run: |
+          docker build -f tensorzero/Dockerfile -t $ECR_REGISTRY/$TZ_REPO:$GITHUB_SHA .
+          docker push $ECR_REGISTRY/$TZ_REPO:$GITHUB_SHA
+          docker tag $ECR_REGISTRY/$TZ_REPO:$GITHUB_SHA $ECR_REGISTRY/$TZ_REPO:latest
+          docker push $ECR_REGISTRY/$TZ_REPO:latest
+
       - name: Deploy app to ECS
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -56,16 +66,22 @@ jobs:
         run: |
           TASK_DEF=$(aws ecs describe-task-definition --task-definition research-agent-app --query taskDefinition)
           NEW_TASK_DEF=$(echo $TASK_DEF | python3 -c "
-          import json, sys
+          import json, sys, os
           td = json.load(sys.stdin)
-          td['containerDefinitions'][0]['image'] = '$ECR_REGISTRY/$APP_REPO:$GITHUB_SHA'
+          registry = os.environ['ECR_REGISTRY']
+          sha = os.environ['GITHUB_SHA']
+          for c in td['containerDefinitions']:
+              if c['name'] == 'app':
+                  c['image'] = f'{registry}/research-agent-app:{sha}'
+              elif c['name'] == 'tensorzero':
+                  c['image'] = f'{registry}/research-agent-tensorzero:{sha}'
           for key in ['taskDefinitionArn','revision','status','requiresAttributes','compatibilities','registeredAt','registeredBy']:
               td.pop(key, None)
           print(json.dumps(td))
           ")
           NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query taskDefinition.taskDefinitionArn --output text)
-          PRIVATE_SUBNETS=$(aws ec2 describe-subnets \
-            --filters "Name=tag:Name,Values=research-agent-private-0,research-agent-private-1" \
+          PUBLIC_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=research-agent-public-0,research-agent-public-1" \
             --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
           ECS_SG=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=research-agent-ecs-tasks" \
@@ -89,7 +105,7 @@ jobs:
               --task-definition $NEW_ARN \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[$PRIVATE_SUBNETS],securityGroups=[$ECS_SG],assignPublicIp=DISABLED}" \
+              --network-configuration "awsvpcConfiguration={subnets=[$PUBLIC_SUBNETS],securityGroups=[$ECS_SG],assignPublicIp=ENABLED}" \
               --load-balancers "targetGroupArn=$APP_TG,containerName=app,containerPort=8000" \
               --region $AWS_REGION
           fi
@@ -109,8 +125,8 @@ jobs:
           print(json.dumps(td))
           ")
           NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query taskDefinition.taskDefinitionArn --output text)
-          PRIVATE_SUBNETS=$(aws ec2 describe-subnets \
-            --filters "Name=tag:Name,Values=research-agent-private-0,research-agent-private-1" \
+          PUBLIC_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=research-agent-public-0,research-agent-public-1" \
             --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
           ECS_SG=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=research-agent-ecs-tasks" \
@@ -134,7 +150,7 @@ jobs:
               --task-definition $NEW_ARN \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[$PRIVATE_SUBNETS],securityGroups=[$ECS_SG],assignPublicIp=DISABLED}" \
+              --network-configuration "awsvpcConfiguration={subnets=[$PUBLIC_SUBNETS],securityGroups=[$ECS_SG],assignPublicIp=ENABLED}" \
               --load-balancers "targetGroupArn=$PYRIT_TG,containerName=pyrit,containerPort=8001" \
               --region $AWS_REGION
           fi

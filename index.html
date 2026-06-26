@@ -89,7 +89,7 @@
   </div>
 
   <script>
-    const API = window.location.hostname === 'localhost' ? 'http://localhost:8000' : '';
+    const API = window.location.hostname === 'localhost' ? 'http://localhost:8000' : 'http://research-agent-alb-521507763.us-east-1.elb.amazonaws.com';
     let currentJobId = null;
     let currentSessionId = null;
     let pollInterval = null;
