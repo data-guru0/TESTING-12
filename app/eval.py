@@ -30,7 +30,7 @@ def _parse_score(text: str) -> float:
 async def _judge(config: Config, prompt: str) -> str:
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            f"{config.tensorzero_url}/v1/inference",
+            f"{config.tensorzero_url}/inference",
             json={
                 "function_name": "research_summarize",
                 "input": {"messages": [{"role": "user", "content": prompt}]},
