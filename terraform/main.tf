@@ -259,7 +259,7 @@ resource "aws_bedrock_guardrail" "main" {
 
   sensitive_information_policy_config {
     pii_entities_config {
-      type   = "SSN"
+      type   = "US_SOCIAL_SECURITY_NUMBER"
       action = "BLOCK"
     }
     pii_entities_config {
