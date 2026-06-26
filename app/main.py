@@ -3,7 +3,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import redis.asyncio as aioredis
@@ -99,6 +99,11 @@ class ResearchRequest(BaseModel):
     topic: str
     session_id: str = ""
     output_format: str = "text"
+
+
+@app.get("/")
+async def frontend():
+    return FileResponse("/app/index.html")
 
 
 @app.get("/health")
