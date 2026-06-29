@@ -13,7 +13,6 @@ from fastapi.responses import HTMLResponse
 # - PromptSendingOrchestrator replaced by PromptSendingAttack
 # - send_prompt_async now receives Message instead of PromptRequestResponse
 from pyrit.setup import initialize_pyrit_async, SQLITE
-from pyrit.prompt_target import PromptTarget
 
 TARGET_URL = os.environ.get("TARGET_URL", "http://app:8000")
 REDIS_URL = os.environ.get("REDIS_URL", "")
@@ -42,32 +41,8 @@ async def _get_redis() -> aioredis.Redis | None:
     return _redis
 
 
-class ResearchAgentTarget(PromptTarget):
-    """
-    Custom PyRIT 0.14.0 PromptTarget wrapping the research agent API.
-    Handles the async job pattern: POST /research → poll /result/{job_id}.
-    """
-
-    async def send_prompt_async(self, *, message) -> any:
-        # PyRIT 0.14.0 passes a Message object. Extract text defensively
-        # across possible attribute names in the Message class.
-        prompt_text = (
-            getattr(message, "text", None)
-            or getattr(message, "converted_value", None)
-            or getattr(message, "content", None)
-            or str(message)
-        )
-        response_text = await self._call_api(str(prompt_text))
-
-        # Construct a response object of the same type PyRIT provided.
-        try:
-            return message.__class__(
-                role="assistant",
-                text=response_text,
-                conversation_id=getattr(message, "conversation_id", str(uuid.uuid4())),
-            )
-        except Exception:
-            return response_text  # fallback: raw string accepted by some PyRIT versions
+class ResearchAgentTarget:
+    """Wraps the research agent API for PyRIT attack runners."""
 
     async def _call_api(self, prompt: str) -> str:
         try:

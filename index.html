@@ -242,9 +242,12 @@
       box.style.display = 'block';
       const diff = data.diff || 'No previous report found.';
       box.innerHTML = diff.split('\n').map(line => {
-        if (line.startsWith('[NEW]')) return `<span class="diff-new">${line}</span>`;
-        if (line.startsWith('[REMOVED]')) return `<span class="diff-removed">${line}</span>`;
-        return `<span>${line}</span>`;
+        const esc = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        if (line.startsWith('+++') || line.startsWith('---')) return `<span style="color:#58a6ff;font-weight:600">${esc}</span>`;
+        if (line.startsWith('@@')) return `<span style="color:#d29922">${esc}</span>`;
+        if (line.startsWith('+')) return `<span class="diff-new">${esc}</span>`;
+        if (line.startsWith('-')) return `<span class="diff-removed">${esc}</span>`;
+        return `<span>${esc}</span>`;
       }).join('\n');
     }
 
