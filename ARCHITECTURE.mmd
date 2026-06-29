@@ -1,74 +1,85 @@
 flowchart TD
-    User(["User / Browser"])
 
-    subgraph CLOUD["AWS Cloud - us-east-1"]
-        ALB["Application Load Balancer\n:80 to App  |  :8001 to PyRIT"]
+    User(["Browser / API Client"])
+
+    subgraph AWS["AWS Cloud — us-east-1"]
+
+        ALB["ALB\n:80 → App  |  :8001 → PyRIT"]
 
         subgraph ECS["ECS Fargate Cluster"]
-            subgraph AppTask["App Task - 512 CPU / 1 GB"]
-                FastAPI["FastAPI :8000\nREST API + Worker Loop"]
-                TZero["TensorZero :3000\nLLM Gateway sidecar"]
+
+            subgraph AppTask["App Task"]
+                API["FastAPI :8000\nREST API + Background Worker"]
+                TZ["TensorZero :3000\nLLM Gateway sidecar"]
             end
-            PyRIT["PyRIT Dashboard :8001\nJailbreak - XPIA - Crescendo - Skeleton Key"]
+
+            PyRIT["PyRIT Dashboard :8001\nPyRIT 0.14.0 · SQLite + Redis\nJailbreak · XPIA · Crescendo · Skeleton Key"]
+
         end
 
-        subgraph Pipeline["Job Pipeline - inside FastAPI Worker"]
-            GI["validate_input"] --> Push["push_job - Redis Stream"]
-            Push --> WL["Worker Loop\nconsume_jobs / ack_job"]
-            WL --> SC["Semantic Cache\ncosine sim >= 0.85"]
-            SC -->|miss| LTMS["LTM Search\npgvector sim >= 0.88 - last 7 days"]
-            LTMS -->|miss| AG["LangGraph Agent\nsearch - summarize - write - verify"]
-            AG --> GO["validate_output"]
-            GO -->|pass| STORE["cache_set + ltm_store + session_add"]
-            STORE --> OUT["Output: text / PDF / JSON"]
-            OUT --> EVAL["LLM-as-Judge Eval\nrelevance - completeness - hallucination - quality"]
+        subgraph JobPipeline["Job Pipeline  (runs inside Worker)"]
+            direction TB
+            V1["validate_input\nBedrock Guardrail"] --> Q["Redis Stream\npush_job"]
+            Q --> W["consume_jobs / ack_job"]
+            W --> C["Semantic Cache\ncosine sim ≥ 0.85"]
+            C -->|"cache miss"| L["LTM Exact Search\npgvector sim ≥ 0.88 · last 7 days"]
+            L -->|"ltm miss"| LA["LTM Related Search\n0.5 ≤ sim < 0.88\npassed to WriterAgent"]
+            LA --> G["LangGraph Pipeline"]
+            G --> V2["validate_output\nBedrock Guardrail"]
+            V2 -->|"pass"| S["cache_set · ltm_store\nsession_add"]
+            S --> E["LLM-as-Judge Eval\nrelevance · completeness\nhallucination · quality"]
+            E --> LS["LangSmith\nTraces + Dataset scores"]
         end
 
-        Bedrock["AWS Bedrock Guardrails\nHATE - VIOLENCE - PII - PROMPT_ATTACK\nweapons - illegal_activities - self_harm"]
-        Secrets["Secrets Manager\nresearch-agent/config"]
-        Redis["ElastiCache Redis 7\nSemantic cache - Sessions\nJob queue stream - Results"]
-        PG["RDS PostgreSQL 15 + pgvector\nreports table - ivfflat cosine index\nembedding 384 dim"]
-        ECR["ECR - 3 repos\napp - pyrit - tensorzero"]
+        subgraph Agents["LangGraph — 4 Agents + Orchestrator"]
+            direction LR
+            Search["SearchAgent\n+ session history"] --> Sum["SummarizeAgent"]
+            Sum --> Write["WriterAgent\n+ LTM related context"]
+            Write --> Critic["CriticAgent\nfactual check"]
+            Critic -->|"fail + retry"| Search
+        end
+
+        Bedrock["Bedrock Guardrails\nHate · Violence · PII\nPrompt Attack · Weapons"]
+        Secrets["Secrets Manager\nresearch-agent/config\nall config at startup"]
+        Redis["ElastiCache Redis 7\nSemantic cache · Sessions\nJob stream · Results"]
+        RDS["RDS PostgreSQL 15 + pgvector\nreports table · ivfflat index\n384-dim embeddings"]
+        ECR["ECR Repos\napp · pyrit · tensorzero"]
         CW["CloudWatch Logs\n7-day retention"]
-        EB["EventBridge\nweekly cron MON 02:00 UTC"]
+        EB["EventBridge\nWeekly red team\nMon 02:00 UTC"]
+
     end
 
-    OpenAI["OpenAI GPT-4o"]
-    Groq["Groq Llama3-70B fallback"]
-    LangSmith["LangSmith\nTracing + Eval Datasets"]
-    ST["SentenceTransformer\nall-MiniLM-L6-v2\n384-dim - runs in-process"]
-    TF["Terraform - terraform/main.tf\nS3 state backend + DynamoDB lock"]
+    OpenAI["OpenAI GPT-4o\nprimary LLM"]
+    Groq["Groq Llama3-70B\nfallback LLM"]
+    LangSmith["LangSmith\nFull traces + Eval datasets"]
+    ST["SentenceTransformer\nall-MiniLM-L6-v2\nin-process · 384-dim"]
+    TF["Terraform\nterraform/main.tf\nS3 state · DynamoDB lock"]
+    GH["GitHub Actions\ndeploy.yml\nBuild → ECR → ECS\nAuto rollback on failure"]
 
-    User -->|HTTP| ALB
-    ALB -->|port 8000| FastAPI
-    ALB -->|port 8001| PyRIT
-    PyRIT -->|red team attacks| ALB
-    EB -->|weekly trigger| PyRIT
+    User -->|"HTTPS"| ALB
+    ALB --> API
+    ALB --> PyRIT
+    PyRIT -->|"red team HTTP calls"| ALB
+    EB -->|"weekly trigger"| PyRIT
 
-    FastAPI --> Pipeline
-    FastAPI <-->|pull secrets at startup| Secrets
-    GI -->|apply_guardrail INPUT| Bedrock
-    GO -->|apply_guardrail OUTPUT| Bedrock
+    API <-->|"pull secrets on startup"| Secrets
+    API --> JobPipeline
+    G --> Agents
 
-    SC -->|embed query| ST
-    LTMS -->|embed query| ST
-    STORE -->|embed topic| ST
+    V1 & V2 -->|"apply_guardrail"| Bedrock
 
-    WL <-->|streams + results| Redis
-    SC <-->|cache read/write| Redis
-    STORE -->|session_add| Redis
+    C & L & LA & S -->|"embed text"| ST
+    W & C & S <-->|"read / write"| Redis
+    L & LA & S <-->|"vector search / INSERT"| RDS
 
-    LTMS <-->|vector search| PG
-    STORE -->|INSERT report| PG
+    Agents -->|"POST /inference"| TZ
+    E -->|"POST /inference"| TZ
+    TZ --> OpenAI
+    TZ -->|"fallback"| Groq
 
-    AG -->|POST /inference| TZero
-    EVAL -->|POST /inference| TZero
-    TZero --> OpenAI
-    TZero -->|fallback| Groq
+    Agents & E -->|"@traceable"| LangSmith
 
-    AG -->|traceable| LangSmith
-    EVAL -->|create_example dataset| LangSmith
-
-    ECR -->|image pull on deploy| ECS
+    GH -->|"push images"| ECR
+    ECR -->|"pull on deploy"| ECS
     ECS --> CW
-    TF -.->|provisions all AWS resources| CLOUD
+    TF -.->|"provisions all resources"| AWS

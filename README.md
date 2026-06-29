@@ -1,228 +1,353 @@
-# Autonomous Research & Report Generation Agent
+# Autonomous Research Agent
 
-A production-grade multi-agent AI system deployed on AWS. You give it a research topic, it autonomously searches, summarizes, writes a full report, checks it for safety, and returns it — with caching, long-term memory, red teaming, and multiple output formats.
-
----
-
-## What This Project Covers
-
-- **FastAPI** — fully async REST API
-- **LangGraph** — multi-agent pipeline (search → summarize → report → verify)
-- **TensorZero** — LLM gateway routing GPT-4o and Groq Llama-3
-- **AWS Bedrock Guardrails** — content safety on both input and output
-- **Redis (ElastiCache)** — semantic cache + job queue (Streams) + session memory
-- **PostgreSQL + pgvector (RDS)** — long-term memory, report versioning, semantic search
-- **PyRIT** — automated red teaming with jailbreak, XPIA, Crescendo, Skeleton Key attacks
-- **LangSmith** — full observability (traces every agent run) + LLM-as-judge evaluation
-- **Terraform** — all AWS infrastructure as code in one file
-- **GitHub Actions** — CI/CD, no Docker needed locally
+Give it a topic → it researches, writes a full report, safety-checks it, caches it, and remembers it. Built on AWS with a real multi-agent pipeline, red teaming, and LLM evaluation on every request.
 
 ---
 
+## What It Uses
 
-## Prerequisites
-
-Install these on your machine before starting:
-
-| Tool | Download | Verify |
-|---|---|---|
-| AWS CLI | https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html | `aws --version` |
-| Terraform | https://developer.hashicorp.com/terraform/install | `terraform --version` |
-| Git | https://git-scm.com/downloads | `git --version` |
-| GitHub account | https://github.com | — |
-
-**Docker is NOT required on your machine.** GitHub Actions builds and pushes all Docker images automatically on every push to main.
+| Component | What It Does |
+|---|---|
+| **FastAPI** | REST API — receives topics, returns reports |
+| **LangGraph** | 4-agent pipeline: Search → Summarize → Write → Verify |
+| **TensorZero** | LLM gateway — routes to GPT-4o, falls back to Groq Llama-3 |
+| **AWS Bedrock Guardrails** | Blocks harmful input and output automatically |
+| **Redis (ElastiCache)** | Semantic cache + session memory + job queue |
+| **PostgreSQL + pgvector (RDS)** | Long-term memory — stores reports as vectors, enables semantic search |
+| **LangSmith** | Traces every agent run + LLM-as-judge scores every report |
+| **PyRIT 0.14.0** | Automated red team attacks — jailbreak, XPIA, crescendo, skeleton key |
+| **Terraform** | Creates all AWS infrastructure with one command |
+| **GitHub Actions** | Builds Docker images and deploys to ECS automatically on every push |
 
 ---
 
-## Project File Structure
+## File Structure
 
 ```
 PROJECT/
 ├── app/
-│   ├── main.py           FastAPI app — endpoints, lifespan, background worker
-│   ├── agents.py         LangGraph 4-node graph: search, summarize, report, verify
-│   ├── cache.py          Redis semantic cache (cosine similarity with embeddings)
-│   ├── guardrails.py     Bedrock Guardrails — validates input AND output
-│   ├── memory.py         Redis session memory + pgvector long-term memory + db_migrate
-│   ├── queue.py          Redis Streams job queue — push, consume, ack
-│   ├── multimodal.py     GPT-4o vision — reads images and PDFs from URLs
-│   ├── output.py         PDF export, structured JSON, report diff
-│   ├── eval.py           LangSmith evaluators (relevance, completeness, hallucination, quality)
-│   ├── config.py         Loads all secrets from AWS Secrets Manager, enables LangSmith tracing
+│   ├── main.py           API, background worker, all endpoints
+│   ├── agents.py         LangGraph multi-agent graph
+│   ├── cache.py          Redis semantic cache
+│   ├── guardrails.py     Bedrock safety checks
+│   ├── memory.py         Session memory (Redis) + long-term memory (pgvector)
+│   ├── queue.py          Redis Streams job queue
+│   ├── output.py         PDF export, JSON report, report diff
+│   ├── eval.py           LangSmith LLM-as-judge evaluation
+│   ├── config.py         Loads everything from AWS Secrets Manager
+│   ├── auth.py           API key middleware
+│   ├── retry.py          Exponential backoff for LLM calls
+│   ├── pool.py           PostgreSQL connection pool
 │   └── Dockerfile
 ├── pyrit_dashboard/
-│   ├── main.py           PyRIT red team dashboard (FastAPI + auto-refresh HTML)
+│   ├── main.py           Red team attack dashboard (PyRIT 0.14.0)
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── tensorzero/
-│   └── tensorzero.toml   LLM routing — GPT-4o primary, Groq fallback
+│   ├── tensorzero.toml   LLM routing config with system prompts
+│   └── Dockerfile
 ├── terraform/
-│   └── main.tf           All AWS infrastructure in one file
-├── .github/
-│   └── workflows/
-│       └── deploy.yml    CI/CD — build, push ECR, deploy ECS
-├── bootstrap.bat         One-time setup script (Windows CMD)
-├── bootstrap.sh          One-time setup script (Mac/Linux or Git Bash)
-├── db_init.sql           Database schema reference (runs automatically on app start)
-├── requirements.txt      Python dependencies for the main app
-├── index.html            Frontend — single HTML file, vanilla JS, no frameworks
-├── .gitattributes        Enforces correct line endings per file type
-└── README.md             This file
+│   └── main.tf           All AWS infrastructure
+├── .github/workflows/
+│   └── deploy.yml        CI/CD pipeline with rollback on failure
+├── bootstrap.bat         One-time backend setup (Windows)
+├── bootstrap.sh          One-time backend setup (Mac/Linux)
+├── requirements.txt      Python dependencies
+├── index.html            Frontend UI
+└── README.md
 ```
 
 ---
 
-## Step-by-Step Setup
+## Prerequisites
 
-### Step 1 — Configure AWS CLI
+Install these before starting:
 
-```cmd
+| Tool | Install | Check |
+|---|---|---|
+| AWS CLI | https://aws.amazon.com/cli/ | `aws --version` |
+| Terraform | https://developer.hashicorp.com/terraform/install | `terraform --version` |
+| Git | https://git-scm.com/downloads | `git --version` |
+
+Docker is **not needed** on your machine. GitHub Actions builds and pushes images automatically.
+
+---
+
+## Setup — Follow in Order
+
+### 1. Configure AWS credentials
+
+```bash
 aws configure
 ```
 
-Enter when prompted:
-- **AWS Access Key ID** — AWS Console → top-right your name → Security Credentials → Create access key
-- **AWS Secret Access Key** — shown once at creation time, copy it immediately
+Enter:
+- **AWS Access Key ID** — AWS Console → your name (top right) → Security Credentials → Create access key
+- **AWS Secret Access Key** — shown once at creation, copy it immediately
 - **Default region** — `us-east-1`
 - **Default output format** — `json`
 
 ---
 
-### Step 2 — Run the Bootstrap Script (one time only)
+### 2. Create the Terraform backend (one time only)
 
-Terraform needs an S3 bucket to store state and a DynamoDB table for locking. Terraform cannot create its own backend, so we use AWS CLI for this one-time step.
+Terraform needs an S3 bucket and DynamoDB table to store its state. Run the bootstrap script to create them:
 
-**Windows CMD:**
+**Windows:**
 ```cmd
 bootstrap.bat
 ```
 
-**Mac/Linux or Git Bash:**
+**Mac / Linux / Git Bash:**
 ```bash
 chmod +x bootstrap.sh
 ./bootstrap.sh
 ```
 
-You will see:
+Expected output:
 ```
-S3 bucket  : research-agent-tfstate  (versioned, encrypted, private)
-DynamoDB   : research-agent-tf-locks (state locking)
+S3 bucket  : research-agent-tfstate
+DynamoDB   : research-agent-tf-locks
 Bootstrap complete.
 ```
 
-The Bedrock Guardrail, Redis, RDS, and all other AWS resources are created by Terraform in the next step — no manual console clicks needed.
+---
+
+### 3. Create a GitHub repo and add secrets
+
+1. Go to https://github.com and create a new repo named `research-agent`
+
+2. Push this project to it:
+```bash
+git init
+git add .
+git commit -m "initial commit"
+git remote add origin https://github.com/YOUR_USERNAME/research-agent.git
+git push -u origin main
+```
+
+3. Add these two secrets (repo → Settings → Secrets and variables → Actions → New repository secret):
+
+| Secret Name | Where to get it |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Same key you used in Step 1 |
+| `AWS_SECRET_ACCESS_KEY` | Same key you used in Step 1 |
 
 ---
 
-### Step 3 — Create a GitHub Repository and Add Secrets
+### 4. Deploy all AWS infrastructure
 
-1. Go to https://github.com and create a new repository named `research-agent`
-
-2. Push this project:
-   ```cmd
-   git init
-   git add .
-   git commit -m "initial commit"
-   git remote add origin https://github.com/YOUR_USERNAME/research-agent.git
-   git push -u origin main
-   ```
-
-3. Add these two secrets to GitHub (repo → Settings → Secrets and variables → Actions → New repository secret):
-
-   | Secret Name | Value |
-   |---|---|
-   | `AWS_ACCESS_KEY_ID` | Your AWS access key ID |
-   | `AWS_SECRET_ACCESS_KEY` | Your AWS secret access key |
-
----
-
-### Step 4 — Deploy All AWS Infrastructure with Terraform
-
-```cmd
+```bash
 cd terraform
 terraform init
-terraform plan -var="app_image=placeholder" -var="pyrit_image=placeholder"
 terraform apply -var="app_image=placeholder" -var="pyrit_image=placeholder"
 ```
 
-Type `yes` when asked to confirm. This takes 5–10 minutes and creates everything: VPC, subnets, ECS cluster, two services, ALB, ElastiCache Redis, RDS PostgreSQL, Bedrock Guardrail, Secrets Manager secret, ECR repositories, IAM roles, VPC endpoints, EventBridge rule.
+Type `yes` when asked. Takes 5–10 minutes.
 
-After it finishes, copy the output values — you will need them:
+This creates: VPC, subnets, ECS cluster, ALB, ElastiCache Redis, RDS PostgreSQL, Bedrock Guardrail, Secrets Manager, ECR repos, IAM roles, VPC endpoints, auto-scaling, EventBridge weekly red team schedule.
+
+After it finishes, note these outputs — you'll need them:
 ```
-alb_dns       = "research-agent-alb-123456.us-east-1.elb.amazonaws.com"
-app_ecr_url   = "123456789.dkr.ecr.us-east-1.amazonaws.com/research-agent-app"
-pyrit_ecr_url = "123456789.dkr.ecr.us-east-1.amazonaws.com/research-agent-pyrit"
-redis_endpoint = "research-agent-redis.abc123.cfg.use1.cache.amazonaws.com"
+alb_dns        = "research-agent-alb-xxxxxxx.us-east-1.elb.amazonaws.com"
+app_ecr_url    = "123456789.dkr.ecr.us-east-1.amazonaws.com/research-agent-app"
+pyrit_ecr_url  = "123456789.dkr.ecr.us-east-1.amazonaws.com/research-agent-pyrit"
 ```
 
 ---
 
-### Step 5 — Get a LangSmith API Key (Free)
+### 5. Get your API keys
 
-LangSmith provides full observability into every agent run and stores evaluation results. Adding the API key is the only manual step — everything else (traces, evaluations, dataset, project) is created automatically when the app first runs.
+You need three keys:
 
-1. Go to https://smith.langchain.com and sign up — it is free
-2. Click your profile (top left) → **API Keys** → **Create API Key**
-3. Copy the key — it starts with `ls__`
+| Key | Where to get it |
+|---|---|
+| `OPENAI_API_KEY` | https://platform.openai.com/api-keys |
+| `GROQ_API_KEY` | https://console.groq.com/keys |
+| `LANGSMITH_API_KEY` | https://smith.langchain.com → Profile → API Keys → Create |
 
-You will add this in the next step. After that, no further LangSmith setup is needed.
+LangSmith is free. It traces every agent run and stores evaluation scores automatically — no extra setup needed after you add the key.
 
 ---
 
-### Step 6 — Add Your API Keys to Secrets Manager
+### 6. Fill in Secrets Manager
 
-Terraform already filled in Redis URL, database URL, Guardrail ID, and region. You need to add three keys.
+Terraform already filled in Redis URL, database URL, Guardrail ID, and all tuning parameters. You only need to add your three API keys.
 
-Go to: AWS Console → Secrets Manager → `research-agent/config` → Retrieve secret value → Edit
+Go to: **AWS Console → Secrets Manager → `research-agent/config` → Retrieve secret value → Edit**
 
-Replace the three `REPLACE_ME` values:
+Replace the `REPLACE_ME` values:
 ```json
 {
-  "OPENAI_API_KEY":   "sk-...",
-  "GROQ_API_KEY":     "gsk_...",
+  "OPENAI_API_KEY":    "sk-...",
+  "GROQ_API_KEY":      "gsk_...",
   "LANGSMITH_API_KEY": "ls__..."
 }
 ```
 
-- `OPENAI_API_KEY` — https://platform.openai.com/api-keys
-- `GROQ_API_KEY` — https://console.groq.com/keys
-- `LANGSMITH_API_KEY` — https://smith.langchain.com → API Keys
+Save. Leave everything else as is.
 
-Leave all other fields as Terraform set them.
+**Optional — set an API key to protect your endpoints:**
 
----
-
-### Step 7 — Push to Main to Trigger the First Deployment
-
-The first `git push` in Step 3 already triggered GitHub Actions. Go check it now:
-
-GitHub repo → Actions tab → you should see a workflow running or completed.
-
-If it is still running, wait for it to turn green (5–10 minutes). This is what it does:
-1. Builds both Docker images on a Ubuntu runner
-2. Pushes them to ECR (tagged with the commit SHA)
-3. Reads the ECS task definition, swaps in the real image URL
-4. Registers a new task definition revision
-5. Updates both ECS services to use it
-6. Waits for the app service to become stable
-
-Once green, your app is live.
-
----
-
-
-## Application URLs
-
-- **Main App:** http://research-agent-alb-521507763.us-east-1.elb.amazonaws.com/
-- **PyRIT Dashboard:** http://research-agent-alb-521507763.us-east-1.elb.amazonaws.com:8001/
-- **Redis Stats:** http://research-agent-alb-521507763.us-east-1.elb.amazonaws.com/stats
-- **LangSmith Traces:** https://smith.langchain.com *(Project: `research-agent`)*
----
-
-## Destroy Everything
-
-```yaml
-terraform destroy -var="app_image=placeholder" -var="pyrit_image=placeholder" -auto-approve
-
+Add this field to the same secret:
+```json
+"API_KEY": "any-string-you-choose"
 ```
+
+If set, every request to the app must include the header `X-API-Key: your-string`. The frontend has a field to enter it (saved in your browser). If left empty, the app runs without auth.
+
+---
+
+### 7. Wait for GitHub Actions to deploy
+
+The `git push` in Step 3 already triggered the first deployment. Go check:
+
+**GitHub repo → Actions tab**
+
+Wait for the workflow to turn green (~5–10 minutes). It:
+1. Builds the app, PyRIT, and TensorZero Docker images
+2. Pushes them to ECR
+3. Registers new ECS task definitions
+4. Updates both ECS services
+5. Waits for stability — rolls back automatically if anything fails
+
+Once green, your app is live at the ALB URL from Step 4.
+
+---
+
+## Using the App
+
+### Frontend
+
+Open in browser:
+```
+http://<alb_dns>/
+```
+
+1. Enter your API key (if you set one in Step 6) — it saves in your browser
+2. Type a research topic
+3. Choose output format (text / PDF / JSON)
+4. Click **Start Research** — polls automatically until done
+5. Click **Show Changes vs Previous** to see what changed since last report on that topic
+
+---
+
+### API Endpoints
+
+All requests need the header `X-API-Key: your-key` if you set one.
+
+**Submit a research job:**
+```bash
+curl -X POST http://<alb_dns>/research \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{"topic": "AI chip market 2025", "session_id": "abc123", "output_format": "text"}'
+```
+Returns: `{"job_id": "...", "session_id": "..."}`
+
+**Poll for result:**
+```bash
+curl http://<alb_dns>/result/<job_id> -H "X-API-Key: your-key"
+```
+Returns `{"status": "pending"}` until done, then the full report.
+
+**Download as PDF:**
+```bash
+curl http://<alb_dns>/result/<job_id>/pdf -H "X-API-Key: your-key" -o report.pdf
+```
+
+**Get session history:**
+```bash
+curl http://<alb_dns>/session/<session_id> -H "X-API-Key: your-key"
+```
+
+**Get report diff (what changed vs previous):**
+```bash
+curl http://<alb_dns>/diff/<topic> -H "X-API-Key: your-key"
+```
+
+**Redis and system stats:**
+```bash
+curl http://<alb_dns>/stats -H "X-API-Key: your-key"
+```
+
+**Health check (no auth needed):**
+```bash
+curl http://<alb_dns>/health
+```
+
+---
+
+## LangSmith — Traces and Evaluation
+
+Every research job automatically:
+1. Traces every agent node (search, summarize, write, verify) to LangSmith
+2. Runs 4 LLM-as-judge evaluations (relevance, completeness, hallucination risk, quality)
+3. Saves scores to a LangSmith dataset called `research-agent-reports`
+
+View traces: https://smith.langchain.com → Project: `research-agent`
+
+**Trigger batch evaluation manually** (runs the agent on recent user topics from the DB):
+```bash
+curl -X POST http://<alb_dns>/run-evaluation \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{}'
+```
+
+Pass specific topics instead:
+```bash
+curl -X POST http://<alb_dns>/run-evaluation \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key" \
+  -d '{"topics": ["quantum computing", "AI regulations"]}'
+```
+
+---
+
+## PyRIT Red Team Dashboard
+
+Open in browser:
+```
+http://<alb_dns>:8001/
+```
+
+This runs 4 types of attacks against your app to check if the guardrails are working:
+
+| Attack | What it does |
+|---|---|
+| **Jailbreak** | Tries to bypass safety instructions directly |
+| **XPIA** | Hides malicious instructions inside a research topic |
+| **Crescendo** | Escalates from innocent questions toward harmful content step by step |
+| **Skeleton Key** | Claims authority (researcher, CISO approval) to bypass restrictions |
+
+Click **Run Selected Attacks** → wait 2–5 minutes → results appear showing BLOCKED or PASSED with a risk score.
+
+Results are saved in Redis and survive container restarts.
+
+**Run attacks via API:**
+```bash
+# All attack types
+curl http://<alb_dns>:8001/run-attacks
+
+# Specific types
+curl "http://<alb_dns>:8001/run-attacks?types=jailbreak,xpia"
+
+# Get results
+curl http://<alb_dns>:8001/results
+```
+
+The weekly red team also runs automatically every Monday at 2am UTC via EventBridge.
+
+---
+
+## Tear Down Everything
+
+```bash
+cd terraform
+terraform destroy -var="app_image=placeholder" -var="pyrit_image=placeholder"
+```
+
+Type `yes` when asked. This deletes all AWS resources — ECS, RDS, Redis, ALB, VPC, Bedrock Guardrail, Secrets Manager, ECR repos, everything.
+
+> **Note:** RDS has deletion protection enabled. Terraform will remove it, but AWS will take a final snapshot first (named `research-agent-postgres-final-snapshot`). This is intentional so you don't lose data by accident.

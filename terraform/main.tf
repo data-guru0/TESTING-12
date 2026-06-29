@@ -22,6 +22,8 @@ provider "aws" {
   region = var.aws_region
 }
 
+# ─── Variables ───────────────────────────────────────────────────────────────
+
 variable "aws_region" {
   default = "us-east-1"
 }
@@ -43,11 +45,82 @@ variable "tensorzero_image" {
   default     = "placeholder"
 }
 
+variable "api_key" {
+  description = "API key for authenticating requests to the research agent"
+  sensitive   = true
+  default     = ""
+}
+
+variable "app_desired_count" {
+  description = "Initial number of app ECS tasks"
+  default     = 1
+}
+
+variable "app_min_capacity" {
+  description = "Minimum number of app ECS tasks for auto-scaling"
+  default     = 1
+}
+
+variable "app_max_capacity" {
+  description = "Maximum number of app ECS tasks for auto-scaling"
+  default     = 5
+}
+
+variable "app_cpu" {
+  description = "CPU units for app task (1024 = 1 vCPU)"
+  default     = "512"
+}
+
+variable "app_memory" {
+  description = "Memory in MB for app task"
+  default     = "1024"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class"
+  default     = "db.t3.micro"
+}
+
+variable "db_multi_az" {
+  description = "Enable RDS Multi-AZ for high availability"
+  default     = false
+}
+
+variable "redis_node_type" {
+  description = "ElastiCache node type"
+  default     = "cache.t3.micro"
+}
+
+variable "redis_num_cache_nodes" {
+  description = "Number of Redis cache nodes"
+  default     = 1
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days"
+  default     = 7
+}
+
+variable "cpu_scale_target" {
+  description = "Target CPU utilization percentage for auto-scaling"
+  default     = 70
+}
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN for HTTPS. Leave empty to use HTTP only."
+  default     = ""
+}
+
+# ─── Data & Locals ────────────────────────────────────────────────────────────
+
 data "aws_availability_zones" "available" {}
 
 locals {
-  azs = slice(data.aws_availability_zones.available.names, 0, 2)
+  azs          = slice(data.aws_availability_zones.available.names, 0, 2)
+  https_enabled = var.acm_certificate_arn != ""
 }
+
+# ─── VPC ──────────────────────────────────────────────────────────────────────
 
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -102,7 +175,8 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# VPC Endpoints — replaces NAT gateway, saves ~$32/month in prototype
+# ─── VPC Endpoints (replaces NAT gateway) ────────────────────────────────────
+
 resource "aws_vpc_endpoint" "ecr_dkr" {
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
@@ -155,6 +229,8 @@ resource "aws_vpc_endpoint" "cloudwatch_logs" {
   private_dns_enabled = true
 }
 
+# ─── Security Groups ──────────────────────────────────────────────────────────
+
 resource "aws_security_group" "vpc_endpoints" {
   name   = "${var.project}-vpc-endpoints"
   vpc_id = aws_vpc.main.id
@@ -174,6 +250,15 @@ resource "aws_security_group" "alb" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+  dynamic "ingress" {
+    for_each = local.https_enabled ? [1] : []
+    content {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
   ingress {
     from_port   = 8001
@@ -227,6 +312,8 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.ecs_tasks.id]
   }
 }
+
+# ─── Bedrock Guardrail ────────────────────────────────────────────────────────
 
 resource "aws_bedrock_guardrail" "main" {
   name                      = "${var.project}-guardrail"
@@ -323,17 +410,18 @@ resource "aws_bedrock_guardrail_version" "main" {
   description   = "v1 — deployed by Terraform"
 }
 
+# ─── ElastiCache Redis ────────────────────────────────────────────────────────
+
 resource "aws_elasticache_subnet_group" "main" {
   name       = "${var.project}-redis-subnet"
   subnet_ids = aws_subnet.private[*].id
 }
 
-# In production: use cluster mode with 3 shards + replicas for HA
 resource "aws_elasticache_cluster" "redis" {
   cluster_id           = "${var.project}-redis"
   engine               = "redis"
-  node_type            = "cache.t3.micro"
-  num_cache_nodes      = 1
+  node_type            = var.redis_node_type
+  num_cache_nodes      = var.redis_num_cache_nodes
   parameter_group_name = "default.redis7"
   engine_version       = "7.1"
   port                 = 6379
@@ -341,32 +429,41 @@ resource "aws_elasticache_cluster" "redis" {
   security_group_ids   = [aws_security_group.redis.id]
 }
 
+# ─── RDS PostgreSQL ───────────────────────────────────────────────────────────
+
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project}-db-subnet"
   subnet_ids = aws_subnet.private[*].id
 }
 
-# In production: use Multi-AZ with read replicas and db.r6g.large
 resource "aws_db_instance" "postgres" {
-  identifier             = "${var.project}-postgres"
-  engine                 = "postgres"
-  engine_version         = "15.8"
-  instance_class         = "db.t3.micro"
-  allocated_storage      = 20
-  db_name                = "researchdb"
-  username               = "dbadmin"
-  password               = random_password.db_password.result
-  db_subnet_group_name   = aws_db_subnet_group.main.name
-  vpc_security_group_ids = [aws_security_group.rds.id]
-  skip_final_snapshot    = true
-  deletion_protection    = false
-  tags                   = { Name = "${var.project}-postgres" }
+  identifier              = "${var.project}-postgres"
+  engine                  = "postgres"
+  engine_version          = "15.8"
+  instance_class          = var.db_instance_class
+  allocated_storage       = 20
+  max_allocated_storage   = 100
+  db_name                 = "researchdb"
+  username                = "dbadmin"
+  password                = random_password.db_password.result
+  db_subnet_group_name    = aws_db_subnet_group.main.name
+  vpc_security_group_ids  = [aws_security_group.rds.id]
+  multi_az                = var.db_multi_az
+  deletion_protection     = true
+  skip_final_snapshot     = false
+  final_snapshot_identifier = "${var.project}-postgres-final-snapshot"
+  backup_retention_period = 7
+  backup_window           = "03:00-04:00"
+  maintenance_window      = "sun:05:00-sun:06:00"
+  tags                    = { Name = "${var.project}-postgres" }
 }
 
 resource "random_password" "db_password" {
   length  = 24
   special = false
 }
+
+# ─── ALB ──────────────────────────────────────────────────────────────────────
 
 resource "aws_lb" "main" {
   name               = "${var.project}-alb"
@@ -409,6 +506,34 @@ resource "aws_lb_listener" "http" {
   port              = 80
   protocol          = "HTTP"
   default_action {
+    type = local.https_enabled ? "redirect" : "forward"
+    dynamic "redirect" {
+      for_each = local.https_enabled ? [1] : []
+      content {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+    dynamic "forward" {
+      for_each = local.https_enabled ? [] : [1]
+      content {
+        target_group {
+          arn = aws_lb_target_group.app.arn
+        }
+      }
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  count             = local.https_enabled ? 1 : 0
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
+  default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.app.arn
   }
@@ -424,8 +549,14 @@ resource "aws_lb_listener" "pyrit" {
   }
 }
 
+# ─── ECS ──────────────────────────────────────────────────────────────────────
+
 resource "aws_ecs_cluster" "main" {
   name = "${var.project}-cluster"
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 }
 
 resource "aws_iam_role" "ecs_task_execution" {
@@ -477,8 +608,8 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:research-agent/*"
       },
       {
@@ -486,29 +617,26 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         Action   = ["bedrock:ApplyGuardrail"]
         Resource = aws_bedrock_guardrail.main.guardrail_arn
       },
-      {
-        Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel"]
-        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/*"
-      }
     ]
   })
 }
 
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/ecs/${var.project}-app"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "pyrit" {
   name              = "/ecs/${var.project}-pyrit"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "tensorzero" {
   name              = "/ecs/${var.project}-tensorzero"
-  retention_in_days = 7
+  retention_in_days = var.log_retention_days
 }
+
+# ─── Secrets Manager ─────────────────────────────────────────────────────────
 
 resource "aws_secretsmanager_secret" "config" {
   name = "research-agent/config"
@@ -517,26 +645,63 @@ resource "aws_secretsmanager_secret" "config" {
 resource "aws_secretsmanager_secret_version" "config" {
   secret_id = aws_secretsmanager_secret.config.id
   secret_string = jsonencode({
-    OPENAI_API_KEY             = "REPLACE_ME"
-    GROQ_API_KEY               = "REPLACE_ME"
-    LANGSMITH_API_KEY          = "REPLACE_ME"
-    LANGCHAIN_PROJECT          = "research-agent"
-    AWS_REGION                 = var.aws_region
-    BEDROCK_GUARDRAIL_ID       = aws_bedrock_guardrail.main.guardrail_id
-    BEDROCK_GUARDRAIL_VERSION  = aws_bedrock_guardrail_version.main.version
-    REDIS_URL                  = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
-    TENSORZERO_URL             = "http://localhost:3000"
-    DATABASE_URL               = "postgresql://dbadmin:${random_password.db_password.result}@${aws_db_instance.postgres.endpoint}/researchdb"
+    # LLM providers (consumed by TensorZero sidecar)
+    OPENAI_API_KEY   = "REPLACE_ME"
+    GROQ_API_KEY     = "REPLACE_ME"
+
+    # Observability
+    LANGSMITH_API_KEY = "REPLACE_ME"
+    LANGCHAIN_PROJECT = "research-agent"
+    LANGSMITH_DATASET = "research-agent-reports"
+
+    # Auth
+    API_KEY = var.api_key
+
+    # AWS
+    AWS_REGION               = var.aws_region
+    BEDROCK_GUARDRAIL_ID     = aws_bedrock_guardrail.main.guardrail_id
+    BEDROCK_GUARDRAIL_VERSION = aws_bedrock_guardrail_version.main.version
+
+    # Infrastructure endpoints
+    REDIS_URL        = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+    TENSORZERO_URL   = "http://localhost:3000"
+    DATABASE_URL     = "postgresql://dbadmin:${random_password.db_password.result}@${aws_db_instance.postgres.endpoint}/researchdb"
+
+    # Tunable parameters (all have safe defaults in config.py)
+    CACHE_TTL                 = "3600"
+    CACHE_SIMILARITY_THRESHOLD = "0.85"
+    SESSION_TTL               = "1800"
+    SESSION_MAX_MESSAGES      = "5"
+    SESSION_CONTENT_TRUNCATE  = "500"
+    LTM_DAYS                  = "7"
+    LTM_THRESHOLD             = "0.88"
+    LTM_DIFF_THRESHOLD        = "0.7"
+    LTM_DIFF_LIMIT            = "5"
+    IVFFLAT_LISTS             = "100"
+    STREAM_KEY                = "research:jobs"
+    CONSUMER_GROUP            = "workers"
+    RESULT_TTL                = "3600"
+    AGENT_REPORT_TRUNCATE     = "3000"
+    AGENT_MAX_ITERATIONS      = "2"
+    EVAL_REPORT_TRUNCATE      = "1500"
+    EVAL_COMMENT_TRUNCATE     = "300"
+    LLM_MAX_RETRIES           = "3"
+    LLM_RETRY_DELAY           = "1.0"
+    RATE_LIMIT_REQUESTS       = "10"
+    RATE_LIMIT_WINDOW         = "60"
+    DB_POOL_MIN               = "2"
+    DB_POOL_MAX               = "10"
   })
 }
 
-# In production: use 1 vCPU / 2GB memory per task, with auto-scaling 2-10 tasks
+# ─── ECS Task Definitions ─────────────────────────────────────────────────────
+
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project}-app"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"
-  memory                   = "1024"
+  cpu                      = var.app_cpu
+  memory                   = var.app_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
   container_definitions = jsonencode([
@@ -545,8 +710,8 @@ resource "aws_ecs_task_definition" "app" {
       image     = var.app_image
       essential = true
       portMappings = [{ containerPort = 8000, protocol = "tcp" }]
-      environment = [{ name = "AWS_REGION", value = var.aws_region }]
-      dependsOn = [{ containerName = "tensorzero", condition = "START" }]
+      environment  = [{ name = "AWS_REGION", value = var.aws_region }]
+      dependsOn    = [{ containerName = "tensorzero", condition = "START" }]
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -559,7 +724,7 @@ resource "aws_ecs_task_definition" "app" {
     {
       name      = "tensorzero"
       image     = var.tensorzero_image
-      essential = false
+      essential = true
       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
       secrets = [
         { name = "OPENAI_API_KEY", valueFrom = "${aws_secretsmanager_secret.config.arn}:OPENAI_API_KEY::" },
@@ -592,7 +757,8 @@ resource "aws_ecs_task_definition" "pyrit" {
     portMappings = [{ containerPort = 8001, protocol = "tcp" }]
     environment = [
       { name = "TARGET_URL", value = "http://${aws_lb.main.dns_name}" },
-      { name = "AWS_REGION", value = var.aws_region }
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "REDIS_URL",  value = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379" }
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -605,11 +771,13 @@ resource "aws_ecs_task_definition" "pyrit" {
   }])
 }
 
+# ─── ECS Services ─────────────────────────────────────────────────────────────
+
 resource "aws_ecs_service" "app" {
   name            = "${var.project}-app"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = 1
+  desired_count   = var.app_desired_count
   launch_type     = "FARGATE"
   network_configuration {
     subnets          = aws_subnet.public[*].id
@@ -620,6 +788,9 @@ resource "aws_ecs_service" "app" {
     target_group_arn = aws_lb_target_group.app.arn
     container_name   = "app"
     container_port   = 8000
+  }
+  lifecycle {
+    ignore_changes = [desired_count]  # auto-scaling manages this
   }
 }
 
@@ -640,6 +811,34 @@ resource "aws_ecs_service" "pyrit" {
     container_port   = 8001
   }
 }
+
+# ─── ECS Auto-Scaling ─────────────────────────────────────────────────────────
+
+resource "aws_appautoscaling_target" "app" {
+  max_capacity       = var.app_max_capacity
+  min_capacity       = var.app_min_capacity
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.app.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "app_cpu" {
+  name               = "${var.project}-app-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.app.resource_id
+  scalable_dimension = aws_appautoscaling_target.app.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.app.service_namespace
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = var.cpu_scale_target
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+
+# ─── ECR ──────────────────────────────────────────────────────────────────────
 
 resource "aws_ecr_repository" "app" {
   name                 = "${var.project}-app"
@@ -662,7 +861,8 @@ resource "aws_ecr_repository" "tensorzero" {
   image_scanning_configuration { scan_on_push = true }
 }
 
-# EventBridge rule for weekly automated red team runs
+# ─── EventBridge (weekly red team) ───────────────────────────────────────────
+
 resource "aws_cloudwatch_event_rule" "weekly_redteam" {
   name                = "${var.project}-weekly-redteam"
   schedule_expression = "cron(0 2 ? * MON *)"
@@ -676,8 +876,9 @@ resource "aws_cloudwatch_event_target" "redteam_ecs" {
     task_definition_arn = aws_ecs_task_definition.pyrit.arn
     launch_type         = "FARGATE"
     network_configuration {
-      subnets         = aws_subnet.private[*].id
-      security_groups = [aws_security_group.ecs_tasks.id]
+      subnets            = aws_subnet.public[*].id
+      security_groups    = [aws_security_group.ecs_tasks.id]
+      assign_public_ip   = true
     }
   }
 }
@@ -701,11 +902,21 @@ resource "aws_iam_role_policy" "eventbridge_ecs_policy" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["ecs:RunTask", "iam:PassRole"]
-      Resource = "*"
+      Action   = ["ecs:RunTask"]
+      Resource = aws_ecs_task_definition.pyrit.arn
+    },
+    {
+      Effect   = "Allow"
+      Action   = ["iam:PassRole"]
+      Resource = [
+        aws_iam_role.ecs_task_execution.arn,
+        aws_iam_role.ecs_task.arn,
+      ]
     }]
   })
 }
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
 
 output "alb_dns" {
   value = aws_lb.main.dns_name

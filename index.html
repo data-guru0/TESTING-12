@@ -43,6 +43,18 @@
   <p class="subtitle">Powered by LangGraph · TensorZero · AWS Bedrock Guardrails</p>
 
   <div class="card">
+    <div class="section-title">Authentication</div>
+    <div style="display:flex;gap:10px;align-items:flex-end">
+      <div style="flex:1">
+        <label>API Key</label>
+        <input type="password" id="api-key" placeholder="Enter your X-API-Key (saved in browser)">
+      </div>
+      <button class="btn btn-secondary" onclick="saveApiKey()" style="white-space:nowrap">Save Key</button>
+    </div>
+    <div id="key-status" style="font-size:0.8rem;color:#8b949e;margin-top:6px"></div>
+  </div>
+
+  <div class="card">
     <div class="section-title">New Research Job</div>
     <div style="margin-bottom:16px">
       <label>Research Topic</label>
@@ -99,6 +111,37 @@
     let lastReport = null;
     let lastTopic = null;
 
+    function getApiKey() {
+      return localStorage.getItem('research_agent_api_key') || '';
+    }
+
+    function authHeaders() {
+      const key = getApiKey();
+      return key ? { 'Content-Type': 'application/json', 'X-API-Key': key }
+                 : { 'Content-Type': 'application/json' };
+    }
+
+    function saveApiKey() {
+      const key = document.getElementById('api-key').value.trim();
+      if (key) {
+        localStorage.setItem('research_agent_api_key', key);
+        document.getElementById('key-status').textContent = 'API key saved.';
+        document.getElementById('key-status').style.color = '#3fb950';
+      } else {
+        localStorage.removeItem('research_agent_api_key');
+        document.getElementById('key-status').textContent = 'API key cleared.';
+        document.getElementById('key-status').style.color = '#8b949e';
+      }
+    }
+
+    // Restore key indicator on load
+    window.addEventListener('DOMContentLoaded', () => {
+      if (getApiKey()) {
+        document.getElementById('key-status').textContent = 'API key loaded from browser storage.';
+        document.getElementById('key-status').style.color = '#3fb950';
+      }
+    });
+
     async function submitResearch() {
       const topic = document.getElementById('topic').value.trim();
       if (!topic) return alert('Please enter a research topic.');
@@ -117,7 +160,7 @@
       try {
         const resp = await fetch(`${API}/research`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify({ topic, output_format: format, session_id: sessionId }),
         });
         if (!resp.ok) {
@@ -145,7 +188,7 @@
     async function pollResult() {
       if (!currentJobId) return;
       try {
-        const resp = await fetch(`${API}/result/${currentJobId}`);
+        const resp = await fetch(`${API}/result/${currentJobId}`, { headers: authHeaders() });
         const data = await resp.json();
         if (data.status === 'pending') return;
         clearInterval(pollInterval);
@@ -193,7 +236,7 @@
 
     async function loadDiff() {
       if (!lastTopic) return;
-      const resp = await fetch(`${API}/diff/${encodeURIComponent(lastTopic)}`);
+      const resp = await fetch(`${API}/diff/${encodeURIComponent(lastTopic)}`, { headers: authHeaders() });
       const data = await resp.json();
       const box = document.getElementById('diff-box');
       box.style.display = 'block';
@@ -207,7 +250,7 @@
 
     async function loadSession() {
       if (!currentSessionId) return;
-      const resp = await fetch(`${API}/session/${currentSessionId}`);
+      const resp = await fetch(`${API}/session/${currentSessionId}`, { headers: authHeaders() });
       const data = await resp.json();
       const box = document.getElementById('session-box');
       if (!data.messages || data.messages.length === 0) {

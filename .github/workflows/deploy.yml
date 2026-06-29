@@ -60,10 +60,18 @@ jobs:
           docker push $ECR_REGISTRY/$TZ_REPO:latest
 
       - name: Deploy app to ECS
+        id: deploy-app
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           APP_REPO: research-agent-app
         run: |
+          # Save the currently running task def ARN so we can roll back to it on failure
+          PREVIOUS_ARN=$(aws ecs describe-services \
+            --cluster research-agent-cluster \
+            --services research-agent-app \
+            --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "")
+          echo "previous_task_def_arn=$PREVIOUS_ARN" >> $GITHUB_OUTPUT
+
           TASK_DEF=$(aws ecs describe-task-definition --task-definition research-agent-app --query taskDefinition)
           NEW_TASK_DEF=$(echo $TASK_DEF | python3 -c "
           import json, sys, os
@@ -111,10 +119,17 @@ jobs:
           fi
 
       - name: Deploy PyRIT to ECS
+        id: deploy-pyrit
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           PYRIT_REPO: research-agent-pyrit
         run: |
+          PREVIOUS_ARN=$(aws ecs describe-services \
+            --cluster research-agent-cluster \
+            --services research-agent-pyrit \
+            --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "")
+          echo "previous_task_def_arn=$PREVIOUS_ARN" >> $GITHUB_OUTPUT
+
           TASK_DEF=$(aws ecs describe-task-definition --task-definition research-agent-pyrit --query taskDefinition)
           NEW_TASK_DEF=$(echo $TASK_DEF | python3 -c "
           import json, sys
@@ -160,4 +175,28 @@ jobs:
           aws ecs wait services-stable \
             --cluster research-agent-cluster \
             --services research-agent-app \
+            --region $AWS_REGION
+
+      - name: Rollback app on deploy failure
+        if: failure() && steps.deploy-app.outputs.previous_task_def_arn != ''
+        run: |
+          echo "Deploy failed — rolling back app to ${{ steps.deploy-app.outputs.previous_task_def_arn }}"
+          aws ecs update-service \
+            --cluster research-agent-cluster \
+            --service research-agent-app \
+            --task-definition ${{ steps.deploy-app.outputs.previous_task_def_arn }} \
+            --region $AWS_REGION
+          aws ecs wait services-stable \
+            --cluster research-agent-cluster \
+            --services research-agent-app \
+            --region $AWS_REGION
+
+      - name: Rollback PyRIT on deploy failure
+        if: failure() && steps.deploy-pyrit.outputs.previous_task_def_arn != ''
+        run: |
+          echo "Deploy failed — rolling back PyRIT to ${{ steps.deploy-pyrit.outputs.previous_task_def_arn }}"
+          aws ecs update-service \
+            --cluster research-agent-cluster \
+            --service research-agent-pyrit \
+            --task-definition ${{ steps.deploy-pyrit.outputs.previous_task_def_arn }} \
             --region $AWS_REGION

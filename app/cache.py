@@ -2,12 +2,11 @@ import json
 import numpy as np
 import redis.asyncio as aioredis
 from sentence_transformers import SentenceTransformer
+from app.config import Config
 
 _model = SentenceTransformer("all-MiniLM-L6-v2")
-CACHE_TTL = 3600
-SIMILARITY_THRESHOLD = 0.85
-CACHE_PREFIX = "semantic:"
-EMB_PREFIX = "emb:"
+_CACHE_PREFIX = "semantic:"
+_EMB_PREFIX = "emb:"
 
 
 def _cosine_similarity(a: list, b: list) -> float:
@@ -19,17 +18,17 @@ def _embed(text: str) -> list:
     return _model.encode(text).tolist()
 
 
-async def cache_get(redis: aioredis.Redis, query: str) -> str | None:
+async def cache_get(redis: aioredis.Redis, config: Config, query: str) -> str | None:
     query_emb = _embed(query)
-    async for key in redis.scan_iter(f"{EMB_PREFIX}*"):
+    async for key in redis.scan_iter(f"{_EMB_PREFIX}*"):
         stored_emb = json.loads(await redis.get(key))
-        if _cosine_similarity(query_emb, stored_emb) >= SIMILARITY_THRESHOLD:
-            cache_key = key.replace(EMB_PREFIX, CACHE_PREFIX)
+        if _cosine_similarity(query_emb, stored_emb) >= config.cache_similarity_threshold:
+            cache_key = key.replace(_EMB_PREFIX, _CACHE_PREFIX)
             return await redis.get(cache_key)
     return None
 
 
-async def cache_set(redis: aioredis.Redis, query: str, result: str) -> None:
+async def cache_set(redis: aioredis.Redis, config: Config, query: str, result: str) -> None:
     key_suffix = abs(hash(query))
-    await redis.setex(f"{CACHE_PREFIX}{key_suffix}", CACHE_TTL, result)
-    await redis.setex(f"{EMB_PREFIX}{key_suffix}", CACHE_TTL, json.dumps(_embed(query)))
+    await redis.setex(f"{_CACHE_PREFIX}{key_suffix}", config.cache_ttl, result)
+    await redis.setex(f"{_EMB_PREFIX}{key_suffix}", config.cache_ttl, json.dumps(_embed(query)))

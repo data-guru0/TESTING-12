@@ -2,10 +2,11 @@ import asyncio
 import hashlib
 from datetime import datetime
 from io import BytesIO
-import asyncpg
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from app.config import Config
+from app.pool import get_pool
+from app.memory import _model
 
 
 def generate_pdf(title: str, content: str) -> bytes:
@@ -40,23 +41,22 @@ def generate_json_report(topic: str, report: str, report_id: str, created_at: da
 
 
 async def get_report_diff(config: Config, topic: str) -> str | None:
-    from app.memory import _model
     embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
-    conn = await asyncpg.connect(config.database_url)
-    try:
+    pool = get_pool()
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT report, created_at FROM reports
-               WHERE 1 - (embedding <=> $1::vector) > 0.7
-               ORDER BY created_at DESC LIMIT 2""",
-            str(embedding),
+            """
+            SELECT report, created_at FROM reports
+            WHERE 1 - (embedding <=> $1::vector) > $2
+            ORDER BY created_at DESC LIMIT 2
+            """,
+            str(embedding), config.ltm_diff_threshold,
         )
         if len(rows) < 2:
             return None
         old_set = set(rows[1]["report"].split(". "))
         new_set = set(rows[0]["report"].split(". "))
-        added = [f"[NEW] {s}" for s in list(new_set - old_set)[:5]]
-        removed = [f"[REMOVED] {s}" for s in list(old_set - new_set)[:5]]
+        added = [f"[NEW] {s}" for s in list(new_set - old_set)[:config.ltm_diff_limit]]
+        removed = [f"[REMOVED] {s}" for s in list(old_set - new_set)[:config.ltm_diff_limit]]
         diff = "\n".join(added + removed)
         return diff if diff.strip() else "No significant changes since last report."
-    finally:
-        await conn.close()
