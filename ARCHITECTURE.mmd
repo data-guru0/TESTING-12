@@ -1,112 +1,133 @@
 flowchart TD
 
-    User(["👤 User — Browser or API Client"])
+    User(["👤 User\nBrowser / API Client"])
 
     subgraph AWS["☁️ AWS Cloud — us-east-1"]
 
-        ALB["🔀 ALB Load Balancer\nPort 80 → App   |   Port 8001 → Red Team"]
+        ALB["🔀 ALB — Application Load Balancer\n:80 → App    :8001 → Red Team"]
 
-        subgraph Security["🔒 Security — every request goes through this"]
+        subgraph ECS["🖥️ ECS Fargate — Auto-scaling Containers"]
             direction LR
-            Auth["API Key Check\nX-API-Key header\n401 if wrong"]
-            Rate["Rate Limiter\n10 requests / 60s per IP\nTracked in Redis"]
-            GIn["Bedrock Guardrail\nInput Scan\nBlocks: harmful topics, PII,\nprompt attacks, weapons"]
+
+            subgraph AppTask["App Task"]
+                API["⚡ FastAPI :8000\nREST API + Background Worker"]
+                TZ["🔀 TensorZero :3000\nLLM Gateway Sidecar"]
+            end
+
+            subgraph RedTask["Red Team Task"]
+                PyRIT["🔴 PyRIT 0.14.0\nJailbreak · XPIA\nCrescendo · Skeleton Key"]
+            end
         end
 
-        Queue["📨 Redis Stream — Job Queue\nRequest is queued and processed in background"]
-
-        subgraph SmartCache["⚡ Smart Lookup — checked before calling any LLM"]
+        subgraph SecLayer["🔒 Security — every request passes through"]
             direction LR
-            Cache["Semantic Cache\nRedis\nSame-ish topic asked before?\n→ return instantly, skip agents"]
-            LTMExact["LTM Exact Match\nPostgreSQL + pgvector\nSame topic in last 7 days?\n→ return stored report"]
-            LTMRelated["LTM Related Context\nPostgreSQL + pgvector\nSimilar topic found?\n→ pass old report to Writer Agent\nas reference — agents still run"]
+            Auth["🔑 API Key\nX-API-Key header\n→ 401 if wrong"]
+            RateL["⏱️ Rate Limiter\n10 req / 60s per IP\nvia Redis counter"]
+            GIn["🛡️ Bedrock Guardrail\nInput Check\nHate · PII · Weapons\nPrompt Attacks"]
         end
 
-        subgraph LangGraph["🤖 LangGraph — 4 AI Agents run in sequence"]
+        Queue["📨 Redis Stream\nJob Queue — async processing"]
+
+        subgraph SmartLookup["⚡ Smart Lookup — saves LLM cost"]
             direction LR
-            S1["① Search Agent\nFinds 5 key facts\nabout the topic\nUses session history\nso it knows what user asked before"]
-            S2["② Summarize Agent\nCondenses raw\nresearch findings\ninto bullet points"]
-            S3["③ Writer Agent\nWrites the full report\nExecutive Summary\nKey Findings · Analysis\nConclusion\nUses related past research\nif LTM found any"]
-            S4["④ Critic Agent\nFact-checks the report\nReturns YES or NO\nIf NO → loops back\nto Search Agent\nup to 3 retries"]
+            SC["Redis\nSemantic Cache\ncosine sim ≥ 0.85\nInstant return"]
+            LTM1["pgvector\nExact LTM Match\nsim ≥ 0.88\nReturn stored report"]
+            LTM2["pgvector\nRelated LTM\n0.5–0.88 sim\nContext → Writer Agent"]
         end
 
-        TZ["🔀 TensorZero — LLM Gateway\nAll agent calls go through here\nPrimary: OpenAI GPT-4o\nFallback: Groq llama-3.1-8b-instant\nAuto-routes on failure"]
-
-        GOut["🛡️ Bedrock Guardrail\nOutput Scan\nBlocks harmful content\nbefore returning to user"]
-
-        subgraph Save["💾 Save & Evaluate — runs after every report"]
+        subgraph Pipeline["🤖 LangGraph — Multi-Agent Pipeline"]
             direction LR
-            Store["Store Results\nCache → Redis\nReport → PostgreSQL pgvector\nSession turn → Redis"]
-            Eval["LLM-as-Judge Evaluation\nLangSmith · 4 scores per report\nRelevance · Completeness\nHallucination Risk · Quality"]
+            A1["① Search Agent\nFinds key facts\nUses session history"]
+            A2["② Summarize Agent\nCondenses findings\ninto bullet points"]
+            A3["③ Writer Agent\nFull structured report\nUses LTM context"]
+            A4["④ Critic Agent\nFact-checks report\nRetries if fails"]
         end
 
-        subgraph Datastores["🗄️ Storage Layer"]
+        GOut["🛡️ Bedrock Guardrail\nOutput Check\nBlocks harmful responses"]
+
+        subgraph SaveEval["💾 Save + Evaluate"]
             direction LR
-            Redis["Redis — ElastiCache\nSemantic cache\nSession memory\nJob queue + results"]
-            RDS["PostgreSQL + pgvector — RDS\nStores all reports\n384-dimension vector embeddings\nFast similarity search\nSentenceTransformer all-MiniLM-L6-v2"]
+            Save["Store Results\nRedis — cache + session\nPostgreSQL — LTM vector"]
+            Eval["📊 LLM-as-Judge\nRelevance · Completeness\nHallucination · Quality"]
         end
 
-        subgraph RedTeam["🔴 PyRIT Red Team — separate container"]
-            PyRIT["PyRIT 0.14.0\nAutomated security attacks\nJailbreak · XPIA\nCrescendo · Skeleton Key\nResults saved to Redis\nRuns weekly — every Monday 2am UTC"]
+        subgraph DataLayer["🗄️ Storage Layer"]
+            direction LR
+            Redis["⚡ Redis ElastiCache\nSemantic cache\nSession memory\nJob queue"]
+            RDS["🗄️ RDS PostgreSQL 15\n+ pgvector extension\n384-dim embeddings\nLong-term memory"]
         end
 
-        Secrets["🔐 Secrets Manager\nresearch-agent/config\nHolds all API keys + config\nApp reads this on startup"]
-        ECR["📦 ECR — Docker Registry\nStores 3 images:\napp · pyrit · tensorzero"]
-        CW["📋 CloudWatch\nContainer logs\n7-day retention"]
-        EB["⏰ EventBridge\nSchedule trigger\nMonday 02:00 UTC"]
-        Bedrock["AWS Bedrock Guardrails"]
+        Secrets["🔐 Secrets Manager\nAll API keys + config\nLoaded at startup"]
+        ECR["📦 ECR\n3 Docker images\napp · pyrit · tensorzero"]
+        CW["📋 CloudWatch\nContainer logs · 7 days"]
+        EB["⏰ EventBridge\nWeekly red team trigger\nEvery Monday 2am UTC"]
 
     end
 
-    subgraph LLMs["🧠 LLM Providers — outside AWS"]
-        GPT4o["OpenAI GPT-4o\nPrimary model"]
-        Groq["Groq\nllama-3.1-8b-instant\nFallback model"]
+    subgraph LLMs["🧠 LLM Providers"]
+        direction LR
+        GPT["🟢 OpenAI GPT-4o\nPrimary"]
+        Groq["🟡 Groq\nllama-3.1-8b-instant\nFallback"]
     end
 
-    LangSmith["📊 LangSmith\nTraces every agent node\nStores 4 eval scores per report\nProject: research-agent"]
+    ST["🔢 SentenceTransformer\nall-MiniLM-L6-v2\n384-dim — runs in-process"]
+    LS["📊 LangSmith\nTraces every agent node\n4 eval scores per report"]
 
     subgraph CICD["🔄 CI/CD + Infrastructure as Code"]
         direction LR
-        GH["GitHub Actions\ndeploy.yml\nOn every git push:\nBuild 3 Docker images\nPush to ECR\nDeploy to ECS\nWait for stability\nAuto rollback if it fails"]
-        TF["Terraform\nterraform/main.tf\nCreates all AWS resources\nVPC · Subnets · ECS · ALB\nElastiCache · RDS · ECR\nBedrock Guardrail\nSecrets Manager · IAM roles\nAuto-scaling · EventBridge\nState: S3 + DynamoDB lock"]
+        GH["⚙️ GitHub Actions\nOn every git push:\nBuild 3 Docker images\nPush to ECR → Deploy to ECS\nAuto rollback on failure"]
+        TF["🏗️ Terraform\nProvisions all AWS:\nVPC · Subnets · ECS · ALB\nRDS · ElastiCache · ECR\nBedrock · Secrets Manager\nIAM · EventBridge · S3 lock"]
     end
 
-    %% ── Main Request Flow ──────────────────────────────────
-    User -->|"1 — sends request"| ALB
-    ALB --> Auth --> Rate --> GIn
-    GIn -->|"safe — push to queue"| Queue
-    Queue --> Cache
-    Cache -->|"miss"| LTMExact
-    LTMExact -->|"miss"| LTMRelated
-    LTMRelated --> S1 --> S2 --> S3 --> S4
-    S4 -->|"critic fails — retry"| S1
-    S4 -->|"critic passes"| GOut
-    Cache -->|"hit — skip agents"| GOut
-    LTMExact -->|"hit — skip agents"| GOut
-    GOut --> Store --> Eval
+    %% ── Entry flow ────────────────────────────────────────────
+    User -->|"HTTPS request"| ALB
+    ALB -->|"app traffic"| Auth
+    Auth --> RateL --> GIn
+    GIn -->|"safe ✓"| Queue
 
-    %% ── LLM Calls ──────────────────────────────────────────
-    S1 & S2 & S3 & S4 & Eval -->|"POST /inference"| TZ
-    TZ --> GPT4o
-    TZ -->|"if GPT-4o fails"| Groq
+    %% ── Smart lookup ──────────────────────────────────────────
+    Queue --> SC
+    SC -->|"cache miss"| LTM1
+    LTM1 -->|"ltm miss"| LTM2
+    SC -->|"cache hit → skip agents"| GOut
+    LTM1 -->|"ltm hit → skip agents"| GOut
 
-    %% ── Storage Read/Write ─────────────────────────────────
-    Cache & Store <-->|"read / write"| Redis
-    LTMExact & LTMRelated & Store <-->|"vector search / insert"| RDS
-    GIn & GOut --> Bedrock
+    %% ── Agent pipeline ────────────────────────────────────────
+    LTM2 --> A1 --> A2 --> A3 --> A4
+    A4 -->|"❌ fail → retry"| A1
+    A4 -->|"✅ pass"| GOut
 
-    %% ── Observability ──────────────────────────────────────
-    S1 & S2 & S3 & S4 & Eval -->|"@traceable"| LangSmith
+    %% ── Output + save ─────────────────────────────────────────
+    GOut --> Save
+    GOut --> Eval
+    Save --> User
 
-    %% ── Red Team ───────────────────────────────────────────
-    ALB --> PyRIT
+    %% ── LLM routing ───────────────────────────────────────────
+    A1 & A2 & A3 & A4 & Eval -->|"POST /inference"| TZ
+    TZ -->|"primary"| GPT
+    TZ -->|"fallback"| Groq
+
+    %% ── Embeddings ────────────────────────────────────────────
+    SC & LTM1 & LTM2 & Save -->|"embed text"| ST
+
+    %% ── Storage ───────────────────────────────────────────────
+    SC & Save <-->|"read / write"| Redis
+    LTM1 & LTM2 & Save <-->|"vector search / store"| RDS
+
+    %% ── Safety ────────────────────────────────────────────────
+    GIn & GOut -->|"guardrail check"| Bedrock_svc["AWS Bedrock\nGuardrails"]
+
+    %% ── Observability ─────────────────────────────────────────
+    A1 & A2 & A3 & A4 & Eval -->|"@traceable"| LS
+
+    %% ── Red Team ──────────────────────────────────────────────
+    ALB -->|"port 8001"| PyRIT
     PyRIT -->|"attack requests"| ALB
-    EB -->|"weekly trigger"| PyRIT
+    EB -->|"weekly schedule"| PyRIT
 
-    %% ── Infra ──────────────────────────────────────────────
-    ALB & Queue & Redis & RDS & Bedrock & Secrets & ECR & CW & EB --> AWS
+    %% ── Infra ─────────────────────────────────────────────────
+    API -->|"reads on startup"| Secrets
     GH -->|"push images"| ECR
-    GH -->|"update ECS service"| LangGraph
-    TF -.->|"provisions everything"| AWS
-    LangGraph -->|"logs"| CW
-    LangGraph -->|"reads API keys"| Secrets
+    ECR -->|"pull on deploy"| ECS
+    ECS -->|"logs"| CW
+    TF -.->|"creates all resources"| AWS
