@@ -348,6 +348,13 @@ cd terraform
 terraform destroy -var="app_image=placeholder" -var="pyrit_image=placeholder"
 ```
 
+#### Delete ECR Repo , S3 Bucket , Dynamo DB and Secret Manager
+
+```bash
+aws secretsmanager delete-secret --secret-id "research-agent/config" --force-delete-without-recovery --region us-east-1
+
+```
+
 Type `yes` when asked. This deletes all AWS resources — ECS, RDS, Redis, ALB, VPC, Bedrock Guardrail, Secrets Manager, ECR repos, everything.
 
 > **Note:** RDS has deletion protection enabled. Terraform will remove it, but AWS will take a final snapshot first (named `research-agent-postgres-final-snapshot`). This is intentional so you don't lose data by accident.
