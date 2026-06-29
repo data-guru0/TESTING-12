@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import logging
 from typing import TypedDict
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langsmith import traceable
 from app.config import Config
 from app.retry import with_retry
@@ -193,7 +193,7 @@ def build_graph(config: Config):
     workflow.add_node("write", orchestrator.write_node)
     workflow.add_node("verify", orchestrator.verify_node)
 
-    workflow.set_entry_point("search")
+    workflow.add_edge(START, "search")
     workflow.add_edge("search", "summarize")
     workflow.add_edge("summarize", "write")
     workflow.add_edge("write", "verify")
