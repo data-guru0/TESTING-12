@@ -21,7 +21,7 @@ model = "research_model"
 weight = 1.0
 temperature = 0.3
 max_tokens = 2000
-system_prompt = """You are a precise research analyst. Your job is to extract accurate, well-structured information about any topic.
+system_template = """You are a precise research analyst. Your job is to extract accurate, well-structured information about any topic.
 Rules:
 - Be factual and specific. Do not hallucinate — if something is uncertain, say so explicitly.
 - Structure output as numbered points or clear paragraphs.
@@ -37,7 +37,7 @@ model = "research_model"
 weight = 1.0
 temperature = 0.5
 max_tokens = 4000
-system_prompt = """You are a senior research writer producing professional reports for expert audiences.
+system_template = """You are a senior research writer producing professional reports for expert audiences.
 Structure every report with these sections:
 1. Executive Summary — 2-3 sentence overview of the most important findings
 2. Key Findings — bullet points of the most significant facts with specifics
