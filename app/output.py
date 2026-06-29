@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import hashlib
 from datetime import datetime
 from io import BytesIO
@@ -54,9 +55,14 @@ async def get_report_diff(config: Config, topic: str) -> str | None:
         )
         if len(rows) < 2:
             return None
-        old_set = set(rows[1]["report"].split(". "))
-        new_set = set(rows[0]["report"].split(". "))
-        added = [f"[NEW] {s}" for s in list(new_set - old_set)[:config.ltm_diff_limit]]
-        removed = [f"[REMOVED] {s}" for s in list(old_set - new_set)[:config.ltm_diff_limit]]
-        diff = "\n".join(added + removed)
-        return diff if diff.strip() else "No significant changes since last report."
+        old_lines = rows[1]["report"].splitlines(keepends=True)
+        new_lines = rows[0]["report"].splitlines(keepends=True)
+        diff_lines = list(difflib.unified_diff(
+            old_lines, new_lines,
+            fromfile=f"previous ({rows[1]['created_at'].date()})",
+            tofile=f"latest ({rows[0]['created_at'].date()})",
+            lineterm="",
+        ))
+        if not diff_lines:
+            return "No significant changes since last report."
+        return "\n".join(diff_lines[:config.ltm_diff_limit * 10])

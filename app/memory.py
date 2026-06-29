@@ -1,3 +1,4 @@
+import difflib
 import json
 import asyncio
 from datetime import datetime
@@ -104,8 +105,12 @@ async def ltm_diff(config: Config, topic: str) -> str | None:
         )
         if len(rows) < 2:
             return None
-        old_sentences = set(rows[1]["report"].split(". "))
-        new_sentences = set(rows[0]["report"].split(". "))
-        added = [f"[NEW] {s}" for s in list(new_sentences - old_sentences)[:config.ltm_diff_limit]]
-        removed = [f"[REMOVED] {s}" for s in list(old_sentences - new_sentences)[:config.ltm_diff_limit]]
-        return "\n".join(added + removed) or "No significant changes detected."
+        old_lines = rows[1]["report"].splitlines(keepends=True)
+        new_lines = rows[0]["report"].splitlines(keepends=True)
+        diff_lines = list(difflib.unified_diff(
+            old_lines, new_lines,
+            fromfile=f"previous ({rows[1]['created_at'].date()})",
+            tofile=f"latest ({rows[0]['created_at'].date()})",
+            lineterm="",
+        ))
+        return "\n".join(diff_lines[:config.ltm_diff_limit * 10]) or "No significant changes detected."

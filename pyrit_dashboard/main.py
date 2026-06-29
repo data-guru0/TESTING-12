@@ -13,7 +13,6 @@ from fastapi.responses import HTMLResponse
 # - PromptSendingOrchestrator replaced by PromptSendingAttack
 # - send_prompt_async now receives Message instead of PromptRequestResponse
 from pyrit.setup import initialize_pyrit_async, SQLITE
-from pyrit.executor.attack import PromptSendingAttack
 from pyrit.prompt_target import PromptTarget
 
 TARGET_URL = os.environ.get("TARGET_URL", "http://app:8000")
@@ -135,8 +134,9 @@ ATTACK_CONFIGS: dict[str, tuple[list[str], int]] = {
 
 async def _run_attack_type(attack_type: str, prompts: list[str], base_risk: int) -> list[dict]:
     """
-    Uses PyRIT 0.14.0 PromptSendingAttack for each prompt.
-    PyRIT stores full conversation in SQLite memory automatically.
+    Runs attack prompts directly through ResearchAgentTarget.
+    PyRIT is initialized for SQLite memory/audit logging; we call the target
+    directly to avoid PromptSendingAttack API compatibility issues.
     """
     await _init_pyrit()
     target = ResearchAgentTarget()
@@ -145,16 +145,7 @@ async def _run_attack_type(attack_type: str, prompts: list[str], base_risk: int)
     for i, prompt in enumerate(prompts):
         start = time.time()
         try:
-            attack = PromptSendingAttack(objective_target=target)
-            result = await attack.execute_async(objective=prompt)
-            # Extract response text from AttackResult (structure varies; try common attributes)
-            response_text = (
-                str(getattr(result, "response", None))
-                if getattr(result, "response", None)
-                else str(getattr(result, "outcome_text", None))
-                if getattr(result, "outcome_text", None)
-                else "NO_RESPONSE"
-            )
+            response_text = await target._call_api(prompt)
         except Exception as e:
             response_text = f"ERROR: {e}"
 
