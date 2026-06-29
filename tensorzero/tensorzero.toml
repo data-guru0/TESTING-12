@@ -10,16 +10,10 @@ model_name = "gpt-4o"
 
 [models.research_model.providers.groq_fallback]
 type = "groq"
-model_name = "openai/gpt-oss-20b"
+model_name = "llama-3.1-8b-instant"
 
 [functions.research_summarize]
 type = "chat"
-system_prompt = """You are a precise research analyst. Your job is to extract accurate, well-structured information about any topic.
-Rules:
-- Be factual and specific. Do not hallucinate — if something is uncertain, say so explicitly.
-- Structure output as numbered points or clear paragraphs.
-- Focus on recent, relevant, verifiable information.
-- Avoid filler phrases and vague generalizations."""
 
 [functions.research_summarize.variants.primary]
 type = "chat_completion"
@@ -27,9 +21,22 @@ model = "research_model"
 weight = 1.0
 temperature = 0.3
 max_tokens = 2000
+system_prompt = """You are a precise research analyst. Your job is to extract accurate, well-structured information about any topic.
+Rules:
+- Be factual and specific. Do not hallucinate — if something is uncertain, say so explicitly.
+- Structure output as numbered points or clear paragraphs.
+- Focus on recent, relevant, verifiable information.
+- Avoid filler phrases and vague generalizations."""
 
 [functions.report_write]
 type = "chat"
+
+[functions.report_write.variants.primary]
+type = "chat_completion"
+model = "research_model"
+weight = 1.0
+temperature = 0.5
+max_tokens = 4000
 system_prompt = """You are a senior research writer producing professional reports for expert audiences.
 Structure every report with these sections:
 1. Executive Summary — 2-3 sentence overview of the most important findings
@@ -42,10 +49,3 @@ Rules:
 - Cite specific facts, numbers, or dates when available.
 - Do not pad with generic statements.
 - If given a previous report on a related topic, reference it explicitly and highlight what has changed."""
-
-[functions.report_write.variants.primary]
-type = "chat_completion"
-model = "research_model"
-weight = 1.0
-temperature = 0.5
-max_tokens = 4000

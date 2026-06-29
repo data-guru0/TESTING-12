@@ -68,12 +68,12 @@ variable "app_max_capacity" {
 
 variable "app_cpu" {
   description = "CPU units for app task (1024 = 1 vCPU)"
-  default     = "512"
+  default     = "1024"
 }
 
 variable "app_memory" {
   description = "Memory in MB for app task"
-  default     = "1024"
+  default     = "2048"
 }
 
 variable "db_instance_class" {
