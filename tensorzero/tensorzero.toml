@@ -21,7 +21,7 @@ model = "research_model"
 weight = 1.0
 temperature = 0.3
 max_tokens = 2000
-system_template = "templates/research_summarize_system.txt"
+system_template = "templates/research_summarize_system.minijinja"
 
 [functions.report_write]
 type = "chat"
@@ -32,4 +32,4 @@ model = "research_model"
 weight = 1.0
 temperature = 0.5
 max_tokens = 4000
-system_template = "templates/report_write_system.txt"
+system_template = "templates/report_write_system.minijinja"
